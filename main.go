@@ -39,7 +39,6 @@ var (
 	maxErrorRate   float64 = 0.2
 	maxErrorCount  int     = 500
 
-	// Estado global
 	sentCount         int32
 	errorCount        int32
 	abortSignal       int32
@@ -48,59 +47,54 @@ var (
 	status500Count    int32
 	firstFailureIndex int32 = -1
 
-	// Para análisis de latencias
 	responseTimes []time.Duration
 	rtMutex       sync.Mutex
 )
 
 func main() {
-	// --- Parseo de flags ---
 	flag.StringVar(&requestFile, "r", "", "Path to HTTP raw request file (Burp format)")
 	flag.IntVar(&totalRequests, "n", 50000, "Total number of requests")
 	flag.IntVar(&maxConcurrency, "c", 200, "Maximum concurrency")
-	flag.IntVar(&timeoutMs, "t", 0, "Request timeout en ms (opcional)")
-	flag.BoolVar(&tfMode, "tf", false, "Modo traditional flood")
-	flag.BoolVar(&rudyMode, "rudy", false, "Modo throttle test (modifica campos)")
-	flag.BoolVar(&increaser, "increaser", false, "Usa incremento en lugar de wordlist")
-	flag.StringVar(&modifiersStr, "modifier", "", "Campos a modificar, ej: token|name|date")
-	flag.StringVar(&wordlistFile, "w", "", "Path a wordlist para throttle tests")
-	flag.StringVar(&outputFile, "o", "", "Archivo donde guardar todo el log")
+	flag.IntVar(&timeoutMs, "t", 0, "Request timeout in ms (optional)")
+	flag.BoolVar(&tfMode, "tf", false, "Traditional flood mode")
+	flag.BoolVar(&rudyMode, "rudy", false, "Throttle test mode (modifies fields)")
+	flag.BoolVar(&increaser, "increaser", false, "Use incremental values instead of wordlist")
+	flag.StringVar(&modifiersStr, "modifier", "", "Fields to modify, e.g. token|name|date")
+	flag.StringVar(&wordlistFile, "w", "", "Path to wordlist for throttle tests")
+	flag.StringVar(&outputFile, "o", "", "File to save full log")
 	flag.Parse()
 
-	// Validaciones básicas
 	if requestFile == "" {
-		fmt.Println(colorRed + "Error:" + colorReset + " necesitas -r")
+		fmt.Println(colorRed + "Error:" + colorReset + " -r is required")
 		os.Exit(1)
 	}
 	if !tfMode && !rudyMode {
-		tfMode = true // por defecto traditional flood
+		tfMode = true
 	}
 	if rudyMode && modifiersStr == "" {
-		fmt.Println(colorRed + "Error:" + colorReset + " --modifier es obligatorio con --rudy")
+		fmt.Println(colorRed + "Error:" + colorReset + " --modifier is required with --rudy")
 		os.Exit(1)
 	}
 	if rudyMode && !increaser && wordlistFile == "" {
-		fmt.Println(colorRed + "Error:" + colorReset + " debes usar --increaser o -w")
+		fmt.Println(colorRed + "Error:" + colorReset + " --increaser or -w is required")
 		os.Exit(1)
 	}
 
-	// Prepara output (stdout + archivo si se pide)
 	var out io.Writer = os.Stdout
 	if outputFile != "" {
 		f, err := os.Create(outputFile)
 		if err != nil {
-			fmt.Printf(colorRed+"Error creando %s: %v"+colorReset+"\n", outputFile, err)
+			fmt.Printf(colorRed+"Error creating %s: %v"+colorReset+"\n", outputFile, err)
 			os.Exit(1)
 		}
 		defer f.Close()
 		out = io.MultiWriter(os.Stdout, f)
 	}
 
-	// --- Parsea la petición raw ---
 	fmt.Fprintln(out, colorCyan+"Parsing HTTP request…"+colorReset)
 	method, url, headers, body, amzTarget, err := parseRawRequest(requestFile)
 	if err != nil {
-		fmt.Fprintf(out, colorRed+"❌ Falló parseo: %v"+colorReset+"\n", err)
+		fmt.Fprintf(out, colorRed+"❌ Parsing failed: %v"+colorReset+"\n", err)
 		os.Exit(1)
 	}
 	fmt.Fprintf(out, "Request: [%s] %s\n", method, url)
@@ -108,7 +102,6 @@ func main() {
 		fmt.Fprintf(out, "X-Amz-Target: %s\n", amzTarget)
 	}
 
-	// Lista de modificadores y wordlist
 	var modifiers []string
 	if rudyMode {
 		modifiers = strings.Split(modifiersStr, "|")
@@ -117,22 +110,20 @@ func main() {
 	if wordlistFile != "" {
 		content, err := os.ReadFile(wordlistFile)
 		if err != nil {
-			fmt.Fprintf(out, colorRed+"Error leyendo wordlist: %v"+colorReset+"\n", err)
+			fmt.Fprintf(out, colorRed+"Error reading wordlist: %v"+colorReset+"\n", err)
 			os.Exit(1)
 		}
 		wordlist = strings.Split(strings.TrimSpace(string(content)), "\n")
 	}
 
-	// Cliente HTTP con timeout opcional
 	client := &http.Client{}
 	if timeoutMs > 0 {
 		client.Timeout = time.Duration(timeoutMs) * time.Millisecond
 	}
 
-	fmt.Fprintf(out, "%sIniciando %d requests (concurrency %d)%s\n",
+	fmt.Fprintf(out, "%sStarting %d requests (concurrency %d)%s\n",
 		colorGreen, totalRequests, maxConcurrency, colorReset)
 
-	// Canal para el spinner
 	done := make(chan bool)
 	go showProgress(done, out)
 
@@ -140,7 +131,6 @@ func main() {
 	var wg sync.WaitGroup
 	start := time.Now()
 
-	// Ciclo principal
 	for i := 0; i < totalRequests && atomic.LoadInt32(&abortSignal) == 0; i++ {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -148,7 +138,6 @@ func main() {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			// Construye el cuerpo (posible modificación)
 			contentType := headers["Content-Type"]
 			reqBody := body
 			if rudyMode {
@@ -156,7 +145,6 @@ func main() {
 			}
 
 			req, _ := http.NewRequest(method, url, bytes.NewReader(reqBody))
-			// Cabeceras
 			for k, v := range headers {
 				if strings.ToLower(k) == "content-length" {
 					continue
@@ -165,18 +153,15 @@ func main() {
 			}
 			req.Header.Set("Content-Length", strconv.Itoa(len(reqBody)))
 
-			// Mide latencia
 			t0 := time.Now()
 			resp, err := client.Do(req)
 			lat := time.Since(t0)
 
 			atomic.AddInt32(&sentCount, 1)
-			// Guarda latencia
 			rtMutex.Lock()
 			responseTimes = append(responseTimes, lat)
 			rtMutex.Unlock()
 
-			// Registra status y errores
 			if err != nil {
 				atomic.AddInt32(&errorCount, 1)
 				atomic.CompareAndSwapInt32(&firstFailureIndex, -1, int32(idx+1))
@@ -197,7 +182,6 @@ func main() {
 						atomic.CompareAndSwapInt32(&firstFailureIndex, -1, int32(idx+1))
 					}
 				}
-				// Abort si tasa de error alta
 				if float64(atomic.LoadInt32(&errorCount))/float64(atomic.LoadInt32(&sentCount)) > maxErrorRate ||
 					atomic.LoadInt32(&errorCount) >= int32(maxErrorCount) {
 					atomic.StoreInt32(&abortSignal, 1)
@@ -210,27 +194,24 @@ func main() {
 	done <- true
 	totalDur := time.Since(start)
 
-	// --- Resumen final ---
 	fmt.Fprintln(out, "\n"+colorCyan+"📋 Test Summary"+colorReset)
 	fmt.Fprintln(out, "--------------------------------")
-	fmt.Fprintf(out, "%sTotal enviados:%s   %d\n", colorGreen, colorReset, sentCount)
+	fmt.Fprintf(out, "%sTotal sent:%s      %d\n", colorGreen, colorReset, sentCount)
 	fmt.Fprintf(out, "%s200 OK:%s         %d\n", colorGreen, colorReset, status200Count)
 	fmt.Fprintf(out, "%s429 Too Many:%s   %d\n", colorYellow, colorReset, status429Count)
 	fmt.Fprintf(out, "%s5xx Errors:%s     %d\n", colorRed, colorReset, status500Count)
-	fmt.Fprintf(out, "Primera falla en request: %d\n", firstFailureIndex)
-	fmt.Fprintf(out, "Duración total: %.2fs\n", totalDur.Seconds())
+	fmt.Fprintf(out, "First failure at request: %d\n", firstFailureIndex)
+	fmt.Fprintf(out, "Total duration: %.2fs\n", totalDur.Seconds())
 
-	// Analiza degradación
 	analyzeDegradation(out)
 
 	if atomic.LoadInt32(&abortSignal) == 1 {
-		fmt.Fprintln(out, colorYellow+"⚠️  Flood aborted: alta tasa de error"+colorReset)
+		fmt.Fprintln(out, colorYellow+"⚠️  Flood aborted: high error rate"+colorReset)
 	} else {
-		fmt.Fprintln(out, colorGreen+"✅ Flood completado. Target responsivo"+colorReset)
+		fmt.Fprintln(out, colorGreen+"✅ Flood completed. Target responsive"+colorReset)
 	}
 }
 
-// showProgress muestra un spinner con métricas en tiempo real
 func showProgress(done <-chan bool, out io.Writer) {
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	i := 0
@@ -254,7 +235,6 @@ func showProgress(done <-chan bool, out io.Writer) {
 	}
 }
 
-// parseRawRequest lee un archivo Burp raw y extrae método, URL, headers y body
 func parseRawRequest(filePath string) (method, fullURL string, headers map[string]string, body []byte, amzTarget string, err error) {
 	raw, err := os.ReadFile(filePath)
 	if err != nil {
@@ -304,11 +284,9 @@ func parseRawRequest(filePath string) (method, fullURL string, headers map[strin
 	return
 }
 
-// modifyBody soporta x-www-form-urlencoded y JSON via regex
 func modifyBody(orig []byte, modifiers, wordlist []string, increaser bool, idx int, contentType string) []byte {
 	bodyStr := string(orig)
 
-	// Si es form-urlencoded
 	if strings.Contains(contentType, "application/x-www-form-urlencoded") {
 		vals, err := url.ParseQuery(bodyStr)
 		if err == nil {
@@ -324,7 +302,6 @@ func modifyBody(orig []byte, modifiers, wordlist []string, increaser bool, idx i
 		}
 	}
 
-	// Fallback JSON u otro texto plano (regex)
 	for _, key := range modifiers {
 		re := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]*)`, regexp.QuoteMeta(key)))
 		if increaser {
@@ -344,46 +321,39 @@ func modifyBody(orig []byte, modifiers, wordlist []string, increaser bool, idx i
 	return []byte(bodyStr)
 }
 
-// analyzeDegradation compara la latencia promedio del primer 10% vs último 10% de las requests
 func analyzeDegradation(out io.Writer) {
-    rtMutex.Lock()
-    defer rtMutex.Unlock()
-    n := len(responseTimes)
-    if n < 2 {
-        fmt.Fprintln(out, "No hay suficientes datos para análisis de degradación")
-        return
-    }
+	rtMutex.Lock()
+	defer rtMutex.Unlock()
+	n := len(responseTimes)
+	if n < 2 {
+		fmt.Fprintln(out, "Not enough data for degradation analysis")
+		return
+	}
 
-    // Definimos el tamaño de cada “bucket” como 10% del total
-    bucket := n / 10
-    if bucket < 1 {
-        bucket = 1
-    }
+	bucket := n / 10
+	if bucket < 1 {
+		bucket = 1
+	}
 
-    // Sumamos las latencias del primer y último bucket
-    var sumFirst, sumLast int64
-    for i := 0; i < bucket && i < n; i++ {
-        sumFirst += int64(responseTimes[i])
-    }
-    for i := n - bucket; i < n; i++ {
-        sumLast += int64(responseTimes[i])
-    }
+	var sumFirst, sumLast int64
+	for i := 0; i < bucket && i < n; i++ {
+		sumFirst += int64(responseTimes[i])
+	}
+	for i := n - bucket; i < n; i++ {
+		sumLast += int64(responseTimes[i])
+	}
 
-    // Calculamos los promedios
-    avgFirst := time.Duration(sumFirst / int64(bucket))
-    avgLast  := time.Duration(sumLast  / int64(bucket))
+	avgFirst := time.Duration(sumFirst / int64(bucket))
+	avgLast := time.Duration(sumLast / int64(bucket))
 
-    // Mostramos los resultados
-    fmt.Fprintf(out,
-        "Avg lat_first: %s%s%s  Avg lat_last: %s%s%s\n",
-        colorCyan, avgFirst, colorReset,
-        colorCyan, avgLast,  colorReset,
-    )
-
-    // Evaluamos si hay degradación (>2× aumento)
-    if avgLast > avgFirst*2 {
-        fmt.Fprintln(out, colorRed+"⚠️  Degradación significativa detectada"+colorReset)
-    } else {
-        fmt.Fprintln(out, colorGreen+"✅ Sin degradación significativa"+colorReset)
-    }
+	fmt.Fprintf(out,
+		"Avg lat_first: %s%s%s  Avg lat_last: %s%s%s\n",
+		colorCyan, avgFirst, colorReset,
+		colorCyan, avgLast, colorReset,
+	)
+	if avgLast > avgFirst*2 {
+		fmt.Fprintln(out, colorRed+"⚠️  Significant degradation detected"+colorReset)
+	} else {
+		fmt.Fprintln(out, colorGreen+"✅ No significant degradation"+colorReset)
+	}
 }
