@@ -236,7 +236,8 @@ func parseRawRequest(filePath string) (method, fullURL string, headers map[strin
 	if err != nil {
 		return
 	}
-	sections := strings.SplitN(string(raw), "\n\n", 2)
+	re := regexp.MustCompile(`\r?\n\r?\n`)
+	sections := re.Split(string(raw), 2)
 	if len(sections) < 1 {
 		err = fmt.Errorf("invalid format: headers not found")
 		return
