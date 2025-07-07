@@ -213,14 +213,12 @@ func main() {
 }
 
 func showProgress(done <-chan bool, out io.Writer) {
-	isTTY := out == os.Stdout // Simplificado, podrías usar algo como github.com/mattn/go-isatty para detección real
-
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	i := 0
 	for {
 		select {
 		case <-done:
-			fmt.Fprintf(out, "\r✓ Completed: %d requests.\n", sentCount)
+			fmt.Fprintf(out, "\r✓ Completed: %d requests.                   \n", sentCount)
 			return
 		default:
 			c := atomic.LoadInt32(&sentCount)
@@ -229,19 +227,8 @@ func showProgress(done <-chan bool, out io.Writer) {
 			s2 := atomic.LoadInt32(&status200Count)
 			s4 := atomic.LoadInt32(&status429Count)
 			s5 := atomic.LoadInt32(&status500Count)
-
-			if isTTY {
-				// Interactive terminal: keep updating same line
-				fmt.Fprintf(out, "\r%s Progress: %d/%d (%.1f%%) - 200:%d 429:%d 5xx:%d err:%d",
-					frames[i], c, totalRequests, p, s2, s4, s5, e)
-			} else {
-				// Log file or non-TTY: print less frequently without animation
-				if c%1000 == 0 {
-					fmt.Fprintf(out, "Progress: %d/%d (%.1f%%) - 200:%d 429:%d 5xx:%d err:%d\n",
-						c, totalRequests, p, s2, s4, s5, e)
-				}
-			}
-
+			fmt.Fprintf(out, "\r%s Progress: %d/%d (%.1f%%) - 200:%d 429:%d 5xx:%d err:%d",
+				frames[i], c, totalRequests, p, s2, s4, s5, e)
 			time.Sleep(100 * time.Millisecond)
 			i = (i + 1) % len(frames)
 		}
