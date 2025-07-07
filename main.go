@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +24,6 @@ const (
 )
 
 var (
-	// Flags
 	requestFile    string
 	totalRequests  int
 	maxConcurrency int
@@ -146,12 +144,10 @@ func main() {
 
 			req, _ := http.NewRequest(method, url, bytes.NewReader(reqBody))
 			for k, v := range headers {
-				if strings.ToLower(k) == "content-length" {
-					continue
+				if strings.ToLower(k) != "content-length" {
+					req.Header.Set(k, v)
 				}
-				req.Header.Set(k, v)
 			}
-			req.Header.Set("Content-Length", strconv.Itoa(len(reqBody)))
 
 			t0 := time.Now()
 			resp, err := client.Do(req)
@@ -288,28 +284,28 @@ func modifyBody(orig []byte, modifiers, wordlist []string, increaser bool, idx i
 	bodyStr := string(orig)
 
 	if strings.Contains(contentType, "application/x-www-form-urlencoded") {
-		values, err := url.ParseQuery(bodyStr)
+		parsed, err := url.ParseQuery(bodyStr)
 		if err != nil {
-			return orig // fallback, do not modify
+			return orig // fallback
 		}
 
 		for _, mod := range modifiers {
-			for key, vals := range values {
-				for i, v := range vals {
-					if v == mod {
+			for key := range parsed {
+				for i, val := range parsed[key] {
+					if val == mod {
 						if increaser {
-							values[key][i] = fmt.Sprintf("%s%d", mod, idx+1)
+							parsed[key][i] = fmt.Sprintf("%s%d", mod, idx+1)
 						} else if len(wordlist) > 0 {
-							values[key][i] = wordlist[idx%len(wordlist)]
+							parsed[key][i] = wordlist[idx%len(wordlist)]
 						}
 					}
 				}
 			}
 		}
-		return []byte(values.Encode())
+		return []byte(parsed.Encode())
 	}
 
-	// JSON fallback (same as before)
+	// JSON fallback (unchanged)
 	for _, key := range modifiers {
 		re := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]*)`, regexp.QuoteMeta(key)))
 		if increaser {
