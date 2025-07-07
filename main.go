@@ -288,18 +288,28 @@ func modifyBody(orig []byte, modifiers, wordlist []string, increaser bool, idx i
 	bodyStr := string(orig)
 
 	if strings.Contains(contentType, "application/x-www-form-urlencoded") {
-		for _, key := range modifiers {
-			// Replace both .Key and .Value patterns
-			for _, suffix := range []string{".Key", ".Value"} {
-				pattern := regexp.MustCompile(fmt.Sprintf(`(%s%s=)[^&]*`, regexp.QuoteMeta(key), regexp.QuoteMeta(suffix)))
-				newVal := fmt.Sprintf("%s%d", key, idx+1)
-				bodyStr = pattern.ReplaceAllString(bodyStr, fmt.Sprintf("${1}%s", url.QueryEscape(newVal)))
+		values, err := url.ParseQuery(bodyStr)
+		if err != nil {
+			return orig // fallback, do not modify
+		}
+
+		for _, mod := range modifiers {
+			for key, vals := range values {
+				for i, v := range vals {
+					if v == mod {
+						if increaser {
+							values[key][i] = fmt.Sprintf("%s%d", mod, idx+1)
+						} else if len(wordlist) > 0 {
+							values[key][i] = wordlist[idx%len(wordlist)]
+						}
+					}
+				}
 			}
 		}
-		return []byte(bodyStr)
+		return []byte(values.Encode())
 	}
 
-	// Fallback for JSON
+	// JSON fallback (same as before)
 	for _, key := range modifiers {
 		re := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]*)`, regexp.QuoteMeta(key)))
 		if increaser {
