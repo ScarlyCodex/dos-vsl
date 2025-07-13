@@ -178,10 +178,10 @@ func main() {
 						atomic.CompareAndSwapInt32(&firstFailureIndex, -1, int32(idx+1))
 					}
 				}
-				if float64(atomic.LoadInt32(&errorCount))/float64(atomic.LoadInt32(&sentCount)) > maxErrorRate ||
-					atomic.LoadInt32(&errorCount) >= int32(maxErrorCount) {
-					atomic.StoreInt32(&abortSignal, 1)
-				}
+				//if float64(atomic.LoadInt32(&errorCount))/float64(atomic.LoadInt32(&sentCount)) > maxErrorRate ||
+					//atomic.LoadInt32(&errorCount) >= int32(maxErrorCount) {
+					//atomic.StoreInt32(&abortSignal, 1)
+				//}
 			}
 		}(i)
 	}
